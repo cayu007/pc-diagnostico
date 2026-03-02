@@ -1,6 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::{fs, path::{Path, PathBuf}, process::Command};
+use serde_json::{json, Value};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 use tauri::path::BaseDirectory;
 use tauri::Manager;
 
@@ -47,7 +52,9 @@ fn run_collector(app: tauri::AppHandle) -> Result<String, String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        return Err(format!("Collector falló.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"));
+        return Err(format!(
+            "Collector falló.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
+        ));
     }
 
     // Lee el JSON generado
@@ -138,7 +145,9 @@ fn kill_process(pid: u32) -> Result<(), String> {
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        return Err(format!("No se pudo terminar el proceso.\n{stdout}\n{stderr}"));
+        return Err(format!(
+            "No se pudo terminar el proceso.\n{stdout}\n{stderr}"
+        ));
     }
 
     Ok(())
@@ -170,53 +179,53 @@ fn toggle_startup_item(
 }
 
 fn toggle_runkey(location: &str, name: &str, command: &str, enabled: bool) -> Result<(), String> {
-    // location llega como "HKCU:\...\Run" o "HKLM:\...\Run"
-    let disabled_key = if location.ends_with(r"\Run") || location.ends_with(r"/Run") {
-        format!("{location}Disabled")
-    } else {
-        format!("{location}Disabled")
-    };
+    let validated_location = validate_runkey_location(location)?;
+    let disabled_key = format!("{validated_location}Disabled");
 
-    if enabled {
-        // Habilitar: mover de RunDisabled -> Run
-        let ps = format!(
-            r#"$ErrorActionPreference='Stop';
-$src='{disabled_key}';
-$dst='{location}';
-$n='{name}';
-if(-not (Test-Path $src)){{ throw 'No existe RunDisabled' }}
-$p=Get-ItemProperty -Path $src -ErrorAction Stop;
-$val=$p.PSObject.Properties | Where-Object {{ $_.Name -eq $n }} | Select-Object -First 1;
-if(-not $val){{ throw 'No existe el valor en RunDisabled' }}
-New-Item -Path $dst -Force | Out-Null;
-Set-ItemProperty -Path $dst -Name $n -Value $val.Value -Force;
-Remove-ItemProperty -Path $src -Name $n -ErrorAction Stop;
-'OK'
-"#,
-        );
-        run_powershell(&ps)
-    } else {
-        // Deshabilitar: mover de Run -> RunDisabled
-        let ps = format!(
-            r#"$ErrorActionPreference='Stop';
-$src='{location}';
-$dst='{disabled_key}';
-$n='{name}';
-if(-not (Test-Path $src)){{ throw 'No existe Run' }}
-$p=Get-ItemProperty -Path $src -ErrorAction Stop;
-$val=$p.PSObject.Properties | Where-Object {{ $_.Name -eq $n }} | Select-Object -First 1;
-if(-not $val){{ throw 'No existe el valor en Run' }}
-New-Item -Path $dst -Force | Out-Null;
-Set-ItemProperty -Path $dst -Name $n -Value $val.Value -Force;
-Remove-ItemProperty -Path $src -Name $n -ErrorAction Stop;
-'OK'
-"#,
-        );
-        // Si command viene vacío, igual intentamos mover por name.
-        // (command se mantiene por compatibilidad futura)
-        let _ = command;
-        run_powershell(&ps)
-    }
+    let ps = r#"
+$ErrorActionPreference='Stop'
+
+$location = $args[0]
+$disabledKey = $args[1]
+$name = $args[2]
+$enable = [System.Convert]::ToBoolean($args[3])
+
+if($enable){
+    $src = $disabledKey
+    $dst = $location
+    $missingMessage = 'No existe RunDisabled'
+    $valueMissingMessage = 'No existe el valor en RunDisabled'
+} else {
+    $src = $location
+    $dst = $disabledKey
+    $missingMessage = 'No existe Run'
+    $valueMissingMessage = 'No existe el valor en Run'
+}
+
+if(-not (Test-Path -Path $src)){ throw $missingMessage }
+
+$p = Get-ItemProperty -Path $src -ErrorAction Stop
+$val = $p.PSObject.Properties | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+if(-not $val){ throw $valueMissingMessage }
+
+New-Item -Path $dst -Force | Out-Null
+Set-ItemProperty -Path $dst -Name $name -Value $val.Value -Force
+Remove-ItemProperty -Path $src -Name $name -ErrorAction Stop
+"#;
+
+    // Si command viene vacío, igual intentamos mover por name.
+    // (command se mantiene por compatibilidad futura)
+    let _ = command;
+
+    run_powershell(
+        ps,
+        &[
+            validated_location,
+            &disabled_key,
+            name,
+            &enabled.to_string(),
+        ],
+    )
 }
 
 fn toggle_startup_folder(location: &str, name: &str, enabled: bool) -> Result<(), String> {
@@ -226,31 +235,90 @@ fn toggle_startup_folder(location: &str, name: &str, enabled: bool) -> Result<()
     }
 
     let disabled_dir = base.join("PCDiagnostico_Disabled");
-    let src = if enabled { disabled_dir.join(name) } else { base.join(name) };
-    let dst = if enabled { base.join(name) } else { disabled_dir.join(name) };
+    let src = if enabled {
+        disabled_dir.join(name)
+    } else {
+        base.join(name)
+    };
+    let dst = if enabled {
+        base.join(name)
+    } else {
+        disabled_dir.join(name)
+    };
 
     if !src.exists() {
         return Err(format!("No existe el elemento: {}", src.display()));
     }
     if !disabled_dir.exists() {
-        fs::create_dir_all(&disabled_dir).map_err(|e| format!("No se pudo crear carpeta Disabled: {e}"))?;
+        fs::create_dir_all(&disabled_dir)
+            .map_err(|e| format!("No se pudo crear carpeta Disabled: {e}"))?;
     }
 
     fs::rename(&src, &dst).map_err(|e| format!("No se pudo mover el elemento: {e}"))?;
     Ok(())
 }
 
-fn run_powershell(script: &str) -> Result<(), String> {
+fn validate_runkey_location(location: &str) -> Result<&'static str, String> {
+    let normalized = location.trim().replace('/', "\\").to_ascii_uppercase();
+    match normalized.as_str() {
+        "HKCU:\\SOFTWARE\\MICROSOFT\\WINDOWS\\CURRENTVERSION\\RUN" => {
+            Ok(r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Run")
+        }
+        "HKLM:\\SOFTWARE\\MICROSOFT\\WINDOWS\\CURRENTVERSION\\RUN" => {
+            Ok(r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run")
+        }
+        _ => Err(structured_error(
+            "invalid_runkey_location",
+            "La ubicación de registro no está permitida",
+            Some(json!({ "location": location })),
+        )),
+    }
+}
+
+fn structured_error(code: &str, message: &str, details: Option<Value>) -> String {
+    json!({
+        "code": code,
+        "message": message,
+        "details": details,
+    })
+    .to_string()
+}
+
+fn run_powershell(script: &str, script_args: &[&str]) -> Result<(), String> {
     let out = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"])
-        .arg(script)
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
+        .args(script_args)
         .output()
-        .map_err(|e| format!("Error ejecutando PowerShell: {e}"))?;
+        .map_err(|e| {
+            structured_error(
+                "powershell_exec_error",
+                "Error ejecutando PowerShell",
+                Some(json!({ "reason": e.to_string() })),
+            )
+        })?;
 
     if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        return Err(format!("{}\n{}", stdout.trim(), stderr.trim()));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr_summary = stderr.lines().find(|line| !line.trim().is_empty());
+        let stdout_summary = stdout.lines().find(|line| !line.trim().is_empty());
+
+        return Err(structured_error(
+            "powershell_failed",
+            "No se pudo completar la operación sobre el registro de inicio",
+            Some(json!({
+                "exit_code": out.status.code(),
+                "stderr_summary": stderr_summary,
+                "stdout_summary": stdout_summary,
+            })),
+        ));
     }
     Ok(())
 }
