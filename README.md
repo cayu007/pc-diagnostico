@@ -157,3 +157,29 @@ Checklist rápido:
 ---
 
 Si estás desarrollando nuevas vistas o acciones, revisa primero el contrato de datos que produce `collector.ps1` para mantener consistencia entre backend y frontend.
+
+## Plantilla para nuevos scripts de recolección
+
+Se agregó una plantilla reutilizable para crear scripts tipo `collector.ps1` en otros contextos:
+
+- Plantilla base: `templates/collector-template.ps1`
+- Generador: `scripts/new-collector-from-template.sh`
+
+### Crear un nuevo script basado en la plantilla
+
+```bash
+npm run new:collector-template -- <nombre-script> <directorio-destino>
+```
+
+Ejemplo:
+
+```bash
+npm run new:collector-template -- inventory src-tauri/resources
+```
+
+Esto crea:
+
+- `src-tauri/resources/inventory.ps1`
+- `src-tauri/resources/inventory.template-notes.md`
+
+La nota incluye un checklist de elementos que normalmente no se suben a Git por `.gitignore` (por ejemplo: `node_modules/`, `.env`, carpetas de build).
