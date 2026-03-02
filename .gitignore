@@ -1,0 +1,62 @@
+# ==============================
+# Logs
+# ==============================
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ==============================
+# Node / Vite
+# ==============================
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+
+# ==============================
+# Rust / Tauri
+# ==============================
+src-tauri/target/
+target/
+**/*.rs.bk
+
+# Cargo lock (opcional)
+# Si es aplicación final, normalmente se mantiene.
+# Si es librería, a veces se ignora.
+# Cargo.lock
+
+# ==============================
+# OS
+# ==============================
+.DS_Store
+Thumbs.db
+
+# ==============================
+# Env files
+# ==============================
+.env
+.env.*
+!.env.example
+
+# ==============================
+# VS Code
+# ==============================
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+
+# ==============================
+# JetBrains / Visual Studio
+# ==============================
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

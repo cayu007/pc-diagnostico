@@ -1,0 +1,790 @@
+import { useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+
+function cls(...a) {
+  return a.filter(Boolean).join(" ");
+}
+
+function formatBytes(bytes) {
+  if (bytes == null) return "N/D";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let n = Number(bytes);
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i++;
+  }
+  return `${n.toFixed(i >= 2 ? 2 : 0)} ${units[i]}`;
+}
+
+function parsePsDate(v) {
+  if (!v || typeof v !== "string") return null;
+
+  const m = v.match(/\/Date\((\d+)\)\//);
+  if (m) {
+    const ms = Number(m[1]);
+    return Number.isFinite(ms) ? new Date(ms) : null;
+  }
+
+  const d = new Date(v);
+  if (!Number.isNaN(d.getTime())) return d;
+
+  return null;
+}
+
+function severityStyle(sev, dark) {
+  if (sev === "high")
+    return dark
+      ? "bg-red-950/40 border-red-900 text-red-200"
+      : "bg-red-50 border-red-200 text-red-800";
+  if (sev === "med")
+    return dark
+      ? "bg-yellow-950/40 border-yellow-900 text-yellow-200"
+      : "bg-yellow-50 border-yellow-200 text-yellow-800";
+  if (sev === "low")
+    return dark
+      ? "bg-green-950/40 border-green-900 text-green-200"
+      : "bg-green-50 border-green-200 text-green-800";
+  return dark
+    ? "bg-zinc-900 border-zinc-800 text-zinc-200"
+    : "bg-gray-50 border-gray-200 text-gray-700";
+}
+
+function scoreTone(score) {
+  if (score == null)
+    return { ring: "text-zinc-400", label: "N/D", badge: "bg-zinc-200 text-zinc-800" };
+  if (score >= 85)
+    return { ring: "text-green-600", label: "Bien", badge: "bg-green-100 text-green-800" };
+  if (score >= 70)
+    return { ring: "text-yellow-600", label: "Atención", badge: "bg-yellow-100 text-yellow-800" };
+  return { ring: "text-red-600", label: "Crítico", badge: "bg-red-100 text-red-800" };
+}
+
+function Gauge({ score, dark }) {
+  const size = 120;
+  const stroke = 10;
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const pct = score == null ? 0 : Math.max(0, Math.min(100, Number(score)));
+  const offset = c - (pct / 100) * c;
+  const tone = scoreTone(score);
+
+  return (
+    <div className="flex items-center gap-4">
+      <div className="relative" style={{ width: size, height: size }}>
+        <svg width={size} height={size} className="block">
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={r}
+            strokeWidth={stroke}
+            className={dark ? "text-zinc-800" : "text-gray-200"}
+            stroke="currentColor"
+            fill="transparent"
+          />
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={r}
+            strokeWidth={stroke}
+            className={tone.ring}
+            stroke="currentColor"
+            fill="transparent"
+            strokeLinecap="round"
+            strokeDasharray={c}
+            strokeDashoffset={offset}
+            transform={`rotate(-90 ${size / 2} ${size / 2})`}
+          />
+        </svg>
+        <div className="absolute inset-0 grid place-items-center">
+          <div className="text-center">
+            <div className={cls("text-3xl font-semibold leading-none", dark ? "text-white" : "text-black")}>
+              {score ?? "—"}
+            </div>
+            <div className={cls("text-xs mt-1", dark ? "text-zinc-400" : "text-gray-500")}>Health</div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div
+          className={cls(
+            "inline-flex items-center px-2 py-1 rounded-lg text-sm",
+            tone.badge,
+            dark && "bg-zinc-800 text-zinc-200"
+          )}
+        >
+          {tone.label}
+        </div>
+        <div className={cls("text-sm mt-2", dark ? "text-zinc-400" : "text-gray-500")}>
+          Puntuación basada en reglas (espacio, RAM, disco, etc.).
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Card({ title, value, sub, right, dark }) {
+  return (
+    <div
+      className={cls(
+        "rounded-2xl border shadow-sm p-4",
+        dark ? "bg-zinc-950 border-zinc-800" : "bg-white border-gray-200"
+      )}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className={cls("text-sm", dark ? "text-zinc-400" : "text-gray-500")}>{title}</div>
+        {right}
+      </div>
+      <div className={cls("mt-2 text-2xl font-semibold", dark ? "text-white" : "text-black")}>{value}</div>
+      {sub ? <div className={cls("text-xs mt-1", dark ? "text-zinc-400" : "text-gray-500")}>{sub}</div> : null}
+    </div>
+  );
+}
+
+function ProgressBar({ pct, labelLeft, labelRight, dark }) {
+  const p = pct == null ? 0 : Math.max(0, Math.min(100, Number(pct)));
+  return (
+    <div>
+      <div className={cls("flex items-center justify-between text-xs", dark ? "text-zinc-400" : "text-gray-500")}>
+        <span>{labelLeft}</span>
+        <span>{labelRight}</span>
+      </div>
+      <div className={cls("h-2 rounded-full overflow-hidden mt-2", dark ? "bg-zinc-800" : "bg-gray-200")}>
+        <div className="h-2 bg-white/90 rounded-full" style={{ width: `${p}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function Table({ cols, rows, dark }) {
+  return (
+    <div className={cls("overflow-auto rounded-2xl border shadow-sm", dark ? "border-zinc-800 bg-zinc-950" : "border-gray-200 bg-white")}>
+      <table className="min-w-full text-sm">
+        <thead className={dark ? "bg-zinc-900" : "bg-gray-50"}>
+          <tr>
+            {cols.map((c) => (
+              <th key={c.key} className={cls("text-left p-3 font-medium whitespace-nowrap", dark ? "text-zinc-300" : "text-gray-600")}>
+                {c.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {(rows || []).map((r, i) => (
+            <tr key={i} className={cls("border-t", dark ? "border-zinc-800" : "border-gray-200")}>
+              {cols.map((c) => (
+                <td key={c.key} className={cls("p-3 align-top", dark ? "text-zinc-200" : "text-gray-800")}>
+                  {c.render ? c.render(r) : r?.[c.key] ?? ""}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function Section({ title, actions, children, dark }) {
+  return (
+    <div className={cls("rounded-2xl border shadow-sm overflow-hidden", dark ? "bg-zinc-950 border-zinc-800" : "bg-white border-gray-200")}>
+      <div className={cls("p-4 border-b flex items-center justify-between gap-3", dark ? "border-zinc-800" : "border-gray-200")}>
+        <div className={cls("font-semibold", dark ? "text-white" : "text-black")}>{title}</div>
+        <div className="flex items-center gap-2">{actions}</div>
+      </div>
+      <div className="p-4">{children}</div>
+    </div>
+  );
+}
+
+function TextInput({ value, onChange, placeholder, dark }) {
+  return (
+    <input
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      className={cls(
+        "w-full rounded-xl px-3 py-2 text-sm border outline-none",
+        dark
+          ? "bg-zinc-900 border-zinc-800 text-zinc-100 placeholder:text-zinc-500 focus:ring-2 focus:ring-white/10"
+          : "bg-white border-gray-200 text-gray-900 placeholder:text-gray-400 focus:ring-2 focus:ring-black/10"
+      )}
+    />
+  );
+}
+
+function QuickButton({ label, onClick, dark }) {
+  return (
+    <button
+      className={cls(
+        "rounded-xl px-3 py-2 text-sm border transition",
+        dark
+          ? "bg-zinc-900 border-zinc-800 text-zinc-100 hover:bg-zinc-800"
+          : "bg-white border-gray-200 hover:bg-gray-50"
+      )}
+      onClick={onClick}
+      type="button"
+    >
+      {label}
+    </button>
+  );
+}
+
+export default function App() {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [data, setData] = useState(null);
+
+  const [tab, setTab] = useState("resumen");
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [dark, setDark] = useState(false);
+
+  const [qProc, setQProc] = useState("");
+  const [qStartup, setQStartup] = useState("");
+  const [qEvents, setQEvents] = useState("");
+  const [qSpace, setQSpace] = useState("");
+
+  async function runAnalysis() {
+    setLoading(true);
+    setError("");
+    try {
+      const result = await invoke("run_collector");
+      const cleaned = String(result).replace(/^\uFEFF/, "");
+      setData(JSON.parse(cleaned));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function doAction(action) {
+    try {
+      await invoke("open_action", { action });
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function openFolder(path) {
+    try {
+      await invoke("open_path", { path });
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const id = setInterval(() => runAnalysis(), 30000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRefresh]);
+
+  const view = useMemo(() => {
+    if (!data) return null;
+
+    const score = data?.health?.score ?? null;
+    const findings = data?.health?.findings ?? [];
+
+    const cpuPct = data?.system?.cpu?.loadPct ?? null;
+    const ramAvailMB = data?.system?.memory?.availableMB ?? null;
+    const ramTotalGB = data?.system?.memory?.totalGB ?? null;
+
+    const volumesRaw = data?.system?.volumes;
+    const volumes = Array.isArray(volumesRaw) ? volumesRaw : (volumesRaw ? [volumesRaw] : []);
+    const c = volumes.find((v) => v?.DeviceID === "C:") || null;
+
+    const cFreePct = c?.FreePct ?? null;
+    const cFreeGB = c?.FreeGB ?? null;
+    const cSizeGB = c?.SizeGB ?? null;
+    const cUsedPct = cFreePct == null ? null : Math.max(0, Math.min(100, 100 - Number(cFreePct)));
+
+    const boot = parsePsDate(data?.system?.os?.lastBootIso ?? data?.system?.os?.lastBoot);
+    const uptime = data?.system?.os?.uptimeHours ?? null;
+
+    const topCPU = data?.performance?.topProcessesByCPU ?? [];
+    const topRAM = data?.performance?.topProcessesByRAM ?? [];
+
+    const startup = data?.startup?.items ?? data?.startup?.runKeys ?? [];
+    const events = data?.events?.systemCritical48h ?? [];
+
+    const generatedAt = data?.generatedAt ? new Date(data.generatedAt) : null;
+
+    const topFolders = data?.spaceAnalysis?.topFolders ?? [];
+    const spaceTargets = data?.spaceAnalysis?.targets ?? [];
+
+    return {
+      score,
+      findings,
+      cpuPct,
+      ramAvailMB,
+      ramTotalGB,
+      volumes,
+      c,
+      cFreePct,
+      cFreeGB,
+      cSizeGB,
+      cUsedPct,
+      uptime,
+      boot,
+      topCPU,
+      topRAM,
+      startup,
+      events,
+      generatedAt,
+      topFolders,
+      spaceTargets,
+      host: data?.system?.hostname,
+      user: data?.system?.user,
+      osCaption: data?.system?.os?.caption ?? data?.system?.os,
+    };
+  }, [data]);
+
+  const navItem = (key, label) => (
+    <button
+      onClick={() => setTab(key)}
+      className={cls(
+        "w-full text-left px-3 py-2 rounded-xl text-sm",
+        tab === key
+          ? "bg-white text-black"
+          : cls(dark ? "hover:bg-zinc-900 text-zinc-200" : "hover:bg-gray-100 text-gray-700")
+      )}
+    >
+      {label}
+    </button>
+  );
+
+  const filteredTopCPU = useMemo(() => {
+    const q = qProc.trim().toLowerCase();
+    const rows = view?.topCPU ?? [];
+    if (!q) return rows;
+    return rows.filter((r) => String(r?.Name || "").toLowerCase().includes(q));
+  }, [view, qProc]);
+
+  const filteredTopRAM = useMemo(() => {
+    const q = qProc.trim().toLowerCase();
+    const rows = view?.topRAM ?? [];
+    if (!q) return rows;
+    return rows.filter((r) => String(r?.Name || "").toLowerCase().includes(q));
+  }, [view, qProc]);
+
+  const filteredStartup = useMemo(() => {
+    const q = qStartup.trim().toLowerCase();
+    const rows = view?.startup ?? [];
+    if (!q) return rows;
+    return rows.filter(
+      (r) =>
+        String(r?.Name || "").toLowerCase().includes(q) ||
+        String(r?.Command || "").toLowerCase().includes(q)
+    );
+  }, [view, qStartup]);
+
+  const filteredEvents = useMemo(() => {
+    const q = qEvents.trim().toLowerCase();
+    const rows = view?.events ?? [];
+    if (!q) return rows;
+    return rows.filter(
+      (r) =>
+        String(r?.ProviderName || "").toLowerCase().includes(q) ||
+        String(r?.Message || "").toLowerCase().includes(q) ||
+        String(r?.Id || "").toLowerCase().includes(q)
+    );
+  }, [view, qEvents]);
+
+  const filteredSpaceTargets = useMemo(() => {
+    const q = qSpace.trim().toLowerCase();
+    const rows = view?.spaceTargets ?? [];
+    if (!q) return rows;
+    return rows.filter(
+      (r) =>
+        String(r?.key || "").toLowerCase().includes(q) ||
+        String(r?.path || "").toLowerCase().includes(q)
+    );
+  }, [view, qSpace]);
+
+  return (
+    <div className={cls("min-h-screen", dark ? "bg-black text-white" : "bg-gray-100 text-black")}>
+      <div className="max-w-7xl mx-auto p-4">
+        <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4">
+          {/* Sidebar */}
+          <aside
+            className={cls(
+              "rounded-2xl border shadow-sm p-3 h-fit lg:sticky lg:top-4",
+              dark ? "bg-zinc-950 border-zinc-800" : "bg-white border-gray-200"
+            )}
+          >
+            <div className="px-2 py-2">
+              <div className="text-lg font-semibold">PC Diagnóstico</div>
+              <div className={cls("text-xs mt-1", dark ? "text-zinc-400" : "text-gray-500")}>
+                {view?.host ? `${view.host} · ${view.user || ""}` : "Listo para analizar"}
+              </div>
+            </div>
+
+            <div className="mt-3 space-y-1">
+              {navItem("resumen", "Resumen")}
+              {navItem("espacio", "Espacio")}
+              {navItem("procesos", "Procesos")}
+              {navItem("arranque", "Arranque")}
+              {navItem("eventos", "Eventos")}
+            </div>
+
+            <div className="mt-4 px-2 space-y-3">
+              <button
+                className={cls(
+                  "w-full rounded-xl px-3 py-2 text-sm disabled:opacity-50",
+                  dark ? "bg-white text-black" : "bg-black text-white"
+                )}
+                onClick={runAnalysis}
+                disabled={loading}
+              >
+                {loading ? "Analizando..." : "Ejecutar análisis"}
+              </button>
+
+              <label className={cls("flex items-center gap-2 text-xs select-none", dark ? "text-zinc-300" : "text-gray-600")}>
+                <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
+                Auto-refresh (30s)
+              </label>
+
+              <label className={cls("flex items-center gap-2 text-xs select-none", dark ? "text-zinc-300" : "text-gray-600")}>
+                <input type="checkbox" checked={dark} onChange={(e) => setDark(e.target.checked)} />
+                Modo oscuro
+              </label>
+
+              {view?.generatedAt ? (
+                <div className={cls("text-xs", dark ? "text-zinc-400" : "text-gray-500")}>
+                  Último análisis: {view.generatedAt.toLocaleString()}
+                </div>
+              ) : null}
+            </div>
+          </aside>
+
+          {/* Main */}
+          <main className="space-y-4">
+            {error ? (
+              <div className={cls("p-4 rounded-2xl border whitespace-pre-wrap", dark ? "bg-red-950/40 border-red-900 text-red-200" : "bg-red-50 border-red-200 text-red-800")}>
+                {error}
+              </div>
+            ) : null}
+
+            {!view ? (
+              <div className={cls("rounded-2xl border shadow-sm p-6", dark ? "bg-zinc-950 border-zinc-800 text-zinc-300" : "bg-white border-gray-200 text-gray-600")}>
+                Pulsa <span className="font-medium">Ejecutar análisis</span> para generar el informe.
+              </div>
+            ) : null}
+
+            {/* RESUMEN */}
+            {view && tab === "resumen" ? (
+              <>
+                <Section
+                  title="Estado general"
+                  actions={
+                    <span className={cls("text-xs px-2 py-1 rounded-lg", dark ? "bg-zinc-900 text-zinc-200 border border-zinc-800" : scoreTone(view.score).badge)}>
+                      {scoreTone(view.score).label}
+                    </span>
+                  }
+                  dark={dark}
+                >
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <Gauge score={view.score} dark={dark} />
+
+                    <div className="space-y-3">
+                      <Card
+                        title="Sistema"
+                        value={view.osCaption || "Windows"}
+                        sub={`Uptime: ${view.uptime ?? "N/D"} h${view.boot ? ` · Boot: ${view.boot.toLocaleString()}` : ""}`}
+                        dark={dark}
+                      />
+                      <ProgressBar
+                        pct={view.cUsedPct}
+                        labelLeft="Disco C: usado"
+                        labelRight={view.c ? `${view.cFreeGB} GB libres (${view.cFreePct}%)` : "N/D"}
+                        dark={dark}
+                      />
+                    </div>
+                  </div>
+                </Section>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <Card title="CPU" value={`${view.cpuPct ?? "N/D"}%`} sub={data?.system?.cpu?.name || ""} dark={dark} />
+                  <Card title="RAM disponible" value={view.ramAvailMB != null ? `${view.ramAvailMB} MB` : "N/D"} sub={view.ramTotalGB != null ? `Total: ${view.ramTotalGB} GB` : ""} dark={dark} />
+                  <Card
+                    title="Disco C:"
+                    value={view.c ? `${view.cFreeGB} GB libres` : "N/D"}
+                    sub={view.c ? `Tamaño: ${view.cSizeGB} GB · Libre: ${view.cFreePct}%` : ""}
+                    dark={dark}
+                    right={
+                      view.cFreePct != null ? (
+                        <span className={cls("text-xs px-2 py-1 rounded-lg border", severityStyle(view.cFreePct < 10 ? "high" : view.cFreePct < 15 ? "med" : "low", dark))}>
+                          {view.cFreePct < 10 ? "Crítico" : view.cFreePct < 15 ? "Atención" : "OK"}
+                        </span>
+                      ) : null
+                    }
+                  />
+                </div>
+
+                <Section title="Quick actions" dark={dark}>
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <QuickButton label="Abrir almacenamiento" onClick={() => doAction("storage")} dark={dark} />
+                    <QuickButton label="Apps de inicio" onClick={() => doAction("startup")} dark={dark} />
+                    <QuickButton label="Liberador de disco" onClick={() => doAction("cleanmgr")} dark={dark} />
+                    <QuickButton label="Abrir TEMP" onClick={() => doAction("temp")} dark={dark} />
+                  </div>
+                  <div className={cls("text-xs mt-3", dark ? "text-zinc-400" : "text-gray-500")}>
+                    Accesos rápidos recomendados (especialmente útil si hay poco espacio en C:).
+                  </div>
+                </Section>
+
+                <Section title="Top carpetas que ocupan espacio" dark={dark}>
+                  {(!view.topFolders || view.topFolders.length === 0) ? (
+                    <div className={dark ? "text-zinc-300" : "text-gray-600"}>
+                      No hay datos de espacio (o no se pudo medir).
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {view.topFolders.map((f, i) => (
+                        <div
+                          key={i}
+                          className={cls(
+                            "rounded-xl border px-3 py-2 flex items-center justify-between gap-3",
+                            dark ? "border-zinc-800 bg-zinc-900/50" : "border-gray-200 bg-white"
+                          )}
+                        >
+                          <div className="min-w-0">
+                            <div className={cls("text-sm font-medium truncate", dark ? "text-zinc-100" : "text-gray-900")}>
+                              {f.key} · {f.sizeGB ?? "N/D"} GB
+                            </div>
+                            <div className={cls("text-xs truncate", dark ? "text-zinc-400" : "text-gray-500")}>
+                              {f.path}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              className={cls(
+                                "text-xs px-2 py-1 rounded-lg border",
+                                dark ? "bg-zinc-900 border-zinc-800 hover:bg-zinc-800" : "bg-white border-gray-200 hover:bg-gray-50"
+                              )}
+                              onClick={() => openFolder(f.path)}
+                              type="button"
+                            >
+                              Abrir
+                            </button>
+
+                            <span
+                              className={cls(
+                                "text-xs px-2 py-1 rounded-lg border",
+                                (f.sizeGB != null && f.sizeGB >= 10) ? severityStyle("high", dark)
+                                  : (f.sizeGB != null && f.sizeGB >= 5) ? severityStyle("med", dark)
+                                    : severityStyle("low", dark)
+                              )}
+                            >
+                              {(f.sizeGB != null && f.sizeGB >= 10) ? "ALTO"
+                                : (f.sizeGB != null && f.sizeGB >= 5) ? "MEDIO"
+                                  : "OK"}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Section>
+
+                <Section title="Alertas detectadas" dark={dark}>
+                  {view.findings.length === 0 ? (
+                    <div className={dark ? "text-zinc-300" : "text-gray-600"}>No se detectaron problemas por reglas básicas.</div>
+                  ) : (
+                    <div className="space-y-3">
+                      {view.findings.map((f, idx) => (
+                        <div key={idx} className={cls("rounded-2xl border p-4", severityStyle(f.severity, dark))}>
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="font-semibold">{f.title}</div>
+                              <div className="text-sm mt-1">{f.detail}</div>
+                            </div>
+                            <span className={cls("text-xs px-2 py-1 rounded-lg border", dark ? "bg-zinc-900 border-zinc-800 text-zinc-200" : "bg-white/60 border-black/10")}>
+                              {String(f.severity || "info").toUpperCase()}
+                            </span>
+                          </div>
+                          <div className="text-sm mt-3">
+                            <span className="font-semibold">Recomendación:</span> {f.recommendation}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Section>
+              </>
+            ) : null}
+
+            {/* ESPACIO */}
+            {view && tab === "espacio" ? (
+              <div className="space-y-4">
+                <Section
+                  title="Espacio (carpetas objetivo)"
+                  actions={
+                    <div className="w-72">
+                      <TextInput
+                        value={qSpace}
+                        onChange={setQSpace}
+                        placeholder="Buscar (key o ruta)..."
+                        dark={dark}
+                      />
+                    </div>
+                  }
+                  dark={dark}
+                >
+                  <div className={cls("text-sm mb-3", dark ? "text-zinc-400" : "text-gray-600")}>
+                    Tamaños estimados por carpeta (modo rápido). Pulsa <b>Abrir</b> para ir directo a la ruta.
+                  </div>
+
+                  <Table
+                    dark={dark}
+                    cols={[
+                      { key: "key", label: "Carpeta" },
+                      { key: "sizeGB", label: "Tamaño (GB)", render: (r) => (r?.sizeGB != null ? r.sizeGB : "N/D") },
+                      { key: "path", label: "Ruta", render: (r) => <span className="text-xs break-all">{r?.path}</span> },
+                      {
+                        key: "_open",
+                        label: "Acción",
+                        render: (r) => (
+                          <button
+                            className={cls(
+                              "text-xs px-2 py-1 rounded-lg border",
+                              dark ? "bg-zinc-900 border-zinc-800 hover:bg-zinc-800" : "bg-white border-gray-200 hover:bg-gray-50"
+                            )}
+                            onClick={() => openFolder(r?.path)}
+                            type="button"
+                          >
+                            Abrir
+                          </button>
+                        ),
+                      },
+                    ]}
+                    rows={filteredSpaceTargets}
+                  />
+                </Section>
+
+                <Section title="Acciones rápidas de espacio" dark={dark}>
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <QuickButton label="Storage Sense" onClick={() => doAction("storage")} dark={dark} />
+                    <QuickButton label="Apps instaladas" onClick={() => doAction("apps")} dark={dark} />
+                    <QuickButton label="Windows Update" onClick={() => doAction("windowsupdate")} dark={dark} />
+                    <QuickButton label="Abrir TEMP" onClick={() => doAction("temp")} dark={dark} />
+                  </div>
+                </Section>
+              </div>
+            ) : null}
+
+            {/* PROCESOS */}
+            {view && tab === "procesos" ? (
+              <div className="space-y-4">
+                <Section
+                  title="Procesos"
+                  actions={
+                    <div className="w-72">
+                      <TextInput value={qProc} onChange={setQProc} placeholder="Buscar proceso (ej. docker, edge, vmmem)..." dark={dark} />
+                    </div>
+                  }
+                  dark={dark}
+                >
+                  <div className={cls("text-sm", dark ? "text-zinc-400" : "text-gray-600")}>
+                    Filtra por nombre de proceso. (Top CPU y Top RAM)
+                  </div>
+                </Section>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <Section title={`Top por CPU (${filteredTopCPU.length})`} dark={dark}>
+                    <Table
+                      dark={dark}
+                      cols={[
+                        { key: "Name", label: "Proceso" },
+                        { key: "Id", label: "PID" },
+                        { key: "CPU", label: "CPU total", render: (r) => (r?.CPU != null ? Number(r.CPU).toFixed(2) : "N/D") },
+                        { key: "WorkingSet64", label: "RAM", render: (r) => formatBytes(r?.WorkingSet64) },
+                      ]}
+                      rows={filteredTopCPU}
+                    />
+                  </Section>
+
+                  <Section title={`Top por RAM (${filteredTopRAM.length})`} dark={dark}>
+                    <Table
+                      dark={dark}
+                      cols={[
+                        { key: "Name", label: "Proceso" },
+                        { key: "Id", label: "PID" },
+                        { key: "WorkingSet64", label: "RAM", render: (r) => formatBytes(r?.WorkingSet64) },
+                        { key: "CPU", label: "CPU total", render: (r) => (r?.CPU != null ? Number(r.CPU).toFixed(2) : "N/D") },
+                      ]}
+                      rows={filteredTopRAM}
+                    />
+                  </Section>
+                </div>
+              </div>
+            ) : null}
+
+            {/* ARRANQUE */}
+            {view && tab === "arranque" ? (
+              <div className="space-y-4">
+                <Section
+                  title={`Programas en inicio (${filteredStartup.length})`}
+                  actions={
+                    <div className="w-72">
+                      <TextInput value={qStartup} onChange={setQStartup} placeholder="Buscar (nombre o comando)..." dark={dark} />
+                    </div>
+                  }
+                  dark={dark}
+                >
+                  <Table
+                    dark={dark}
+                    cols={[
+                      { key: "Name", label: "Nombre" },
+                      { key: "Location", label: "Ubicación" },
+                      { key: "Command", label: "Comando", render: (r) => <span className={cls("text-xs break-all", dark ? "text-zinc-200" : "text-gray-700")}>{r?.Command}</span> },
+                    ]}
+                    rows={filteredStartup}
+                  />
+                </Section>
+              </div>
+            ) : null}
+
+            {/* EVENTOS */}
+            {view && tab === "eventos" ? (
+              <div className="space-y-4">
+                <Section
+                  title={`Eventos críticos (${filteredEvents.length})`}
+                  actions={
+                    <div className="w-72">
+                      <TextInput value={qEvents} onChange={setQEvents} placeholder="Buscar (origen, ID, texto)..." dark={dark} />
+                    </div>
+                  }
+                  dark={dark}
+                >
+                  <Table
+                    dark={dark}
+                    cols={[
+                      {
+                        key: "TimeCreated",
+                        label: "Fecha",
+                        render: (r) => {
+                          const d = parsePsDate(r?.TimeCreated);
+                          return d ? d.toLocaleString() : (r?.TimeCreated ?? "");
+                        },
+                      },
+                      { key: "Id", label: "ID" },
+                      { key: "ProviderName", label: "Origen" },
+                      { key: "LevelDisplayName", label: "Nivel" },
+                      { key: "Message", label: "Mensaje", render: (r) => <span className={cls("text-xs whitespace-normal", dark ? "text-zinc-200" : "text-gray-700")}>{r?.Message}</span> },
+                    ]}
+                    rows={filteredEvents}
+                  />
+                </Section>
+              </div>
+            ) : null}
+          </main>
+        </div>
+      </div>
+    </div>
+  );
+}
