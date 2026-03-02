@@ -351,6 +351,7 @@ export default function App() {
   const [qSpace, setQSpace] = useState("");
 
   const [eventsWindow, setEventsWindow] = useState("48h"); // 24h | 48h | 7d
+  const [eventSourceFilter, setEventSourceFilter] = useState("both"); // system | application | both
   const [eventDetail, setEventDetail] = useState(null);
 
   async function runAnalysis() {
@@ -460,7 +461,8 @@ export default function App() {
     const topRAM = data?.performance?.topProcessesByRAM ?? [];
 
     const startup = data?.startup?.items ?? data?.startup?.runKeys ?? [];
-    const events = data?.events?.systemCritical48h ?? [];
+    const systemEvents = data?.events?.systemCritical48h ?? [];
+    const applicationEvents = data?.events?.applicationCritical48h ?? [];
 
     const generatedAt = data?.generatedAt ? new Date(data.generatedAt) : null;
 
@@ -484,7 +486,8 @@ export default function App() {
       topCPU,
       topRAM,
       startup,
-      events,
+      systemEvents,
+      applicationEvents,
       generatedAt,
       topFolders,
       spaceTargets,
@@ -550,7 +553,14 @@ export default function App() {
 
   const filteredEvents = useMemo(() => {
     const q = qEvents.trim().toLowerCase();
-    const rows = view?.events ?? [];
+    const systemRows = (view?.systemEvents ?? []).map((r) => ({ ...r, _source: "System" }));
+    const applicationRows = (view?.applicationEvents ?? []).map((r) => ({ ...r, _source: "Application" }));
+    const rows =
+      eventSourceFilter === "system"
+        ? systemRows
+        : eventSourceFilter === "application"
+          ? applicationRows
+          : [...systemRows, ...applicationRows];
     const now = Date.now();
 
     const byWindow = rows.filter((r) => {
@@ -567,16 +577,17 @@ export default function App() {
         safeStr(r?.Message).toLowerCase().includes(q) ||
         safeStr(r?.Id).toLowerCase().includes(q)
     );
-  }, [view, qEvents, windowMs]);
+  }, [view, eventSourceFilter, qEvents, windowMs]);
 
   const eventGroups = useMemo(() => {
     const rows = filteredEvents ?? [];
     const map = new Map();
     for (const r of rows) {
+      const source = safeStr(r?._source || "N/D");
       const prov = safeStr(r?.ProviderName || "N/D");
       const id = safeStr(r?.Id || "N/D");
-      const key = `${prov}#${id}`;
-      map.set(key, { provider: prov, id, count: (map.get(key)?.count || 0) + 1 });
+      const key = `${source}#${prov}#${id}`;
+      map.set(key, { source, provider: prov, id, count: (map.get(key)?.count || 0) + 1 });
     }
     return Array.from(map.values()).sort((a, b) => b.count - a.count).slice(0, 10);
   }, [filteredEvents]);
@@ -1463,6 +1474,19 @@ export default function App() {
                         <option value="7d">7 días</option>
                       </select>
 
+                      <select
+                        value={eventSourceFilter}
+                        onChange={(e) => setEventSourceFilter(e.target.value)}
+                        className={cls(
+                          "rounded-xl px-3 py-2 text-sm border outline-none",
+                          dark ? "bg-zinc-900 border-zinc-800 text-zinc-100" : "bg-white border-gray-200 text-gray-900"
+                        )}
+                      >
+                        <option value="system">System</option>
+                        <option value="application">Application</option>
+                        <option value="both">Ambos</option>
+                      </select>
+
                       <div className="w-72">
                         <TextInput value={qEvents} onChange={setQEvents} placeholder="Buscar (origen, ID, texto)..." dark={dark} />
                       </div>
@@ -1471,13 +1495,14 @@ export default function App() {
                   dark={dark}
                 >
                   <div className={cls("text-sm mb-3", dark ? "text-zinc-400" : "text-gray-600")}>
-                    Agrupado por origen + EventID (Top 10). Usa “Ver” para detalle y “Buscar” para abrir Google.
+                    Agrupado por fuente + origen + EventID (Top 10). Usa “Ver” para detalle y “Buscar” para abrir Google.
                   </div>
 
                   <div className="mb-4">
                     <Table
                       dark={dark}
                       cols={[
+                        { key: "source", label: "Fuente" },
                         { key: "provider", label: "Origen" },
                         { key: "id", label: "ID" },
                         { key: "count", label: "Repeticiones" },
@@ -1531,6 +1556,24 @@ export default function App() {
                         render: (r) => {
                           const d = parsePsDate(r?.TimeCreated);
                           return d ? d.toLocaleString() : safeStr(r?.TimeCreated ?? "");
+                        },
+                      },
+                      {
+                        key: "_source",
+                        label: "Fuente",
+                        render: (r) => {
+                          const source = safeStr(r?._source || "N/D");
+                          const isSystem = source.toLowerCase() === "system";
+                          return (
+                            <span
+                              className={cls(
+                                "text-xs px-2 py-1 rounded-lg border",
+                                isSystem ? severityStyle("med", dark) : severityStyle("low", dark)
+                              )}
+                            >
+                              {source}
+                            </span>
+                          );
                         },
                       },
                       { key: "Id", label: "ID", render: (r) => safeStr(r?.Id) },
