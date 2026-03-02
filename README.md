@@ -14,3 +14,13 @@ The React Compiler is not enabled on this template because of its impact on dev 
 ## Expanding the ESLint configuration
 
 If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+
+## Build y limpieza de artefactos
+
+Para generar artefactos de build sin arrastrar archivos temporales al repositorio:
+
+1. Ejecuta los builds con scripts del proyecto (`npm run build` y/o `npm run tauri build`).
+2. No crees archivos manuales en la raíz del repo; usa carpetas de salida estándar (`dist/`, `src-tauri/target/`).
+3. Antes de hacer commit, valida nombres sospechosos en raíz con:
+   - `npm run validate:root-files`
+4. Revisa `git status` para confirmar que sólo subes cambios esperados.
