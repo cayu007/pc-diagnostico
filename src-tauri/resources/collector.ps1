@@ -17,23 +17,47 @@ function Get-PerfValue($className, $propName, $filter = $null) {
 }
 
 function TopProcsCpu($top=10) {
-  $procs = Get-Process |
+  $perf = SafeRun {
+    Get-CimInstance Win32_PerfFormattedData_PerfProc_Process |
+      Where-Object { $_.IDProcess -gt 0 -and $_.Name -ne "_Total" -and $_.Name -ne "Idle" }
+  }
+
+  if (-not $perf) { return @() }
+
+  $procById = @{}
+  Get-Process |
     Where-Object { $_.Id -ne 0 } |
-    Select-Object Name, Id, CPU, WorkingSet64, Path |
-    Sort-Object CPU -Descending |
+    ForEach-Object { $procById[$_.Id] = $_ }
+
+  $procs = $perf |
+    Sort-Object PercentProcessorTime -Descending |
     Select-Object -First $top
 
   $out = @()
   foreach($p in $procs){
-    $path = $p.Path
+    $pid = [int]$p.IDProcess
+    $gp = $procById[$pid]
+    $path = $null
+    $workingSet64 = $null
+    $cpu = $null
+    $name = $p.Name
+
+    if ($gp) {
+      $path = $gp.Path
+      $workingSet64 = $gp.WorkingSet64
+      $cpu = $gp.CPU
+      if ($gp.Name) { $name = $gp.Name }
+    }
+
     if (-not $path) {
-      $path = SafeRun { (Get-CimInstance Win32_Process -Filter ("ProcessId=" + $p.Id) | Select-Object -First 1 -ExpandProperty ExecutablePath) }
+      $path = SafeRun { (Get-CimInstance Win32_Process -Filter ("ProcessId=" + $pid) | Select-Object -First 1 -ExpandProperty ExecutablePath) }
     }
     $out += [pscustomobject]@{
-      Name = $p.Name
-      Id = $p.Id
-      CPU = $p.CPU
-      WorkingSet64 = $p.WorkingSet64
+      Name = $name
+      Id = $pid
+      CPU = $cpu
+      CpuPct = [math]::Round([double]$p.PercentProcessorTime, 2)
+      WorkingSet64 = $workingSet64
       Path = $path
     }
   }
@@ -57,6 +81,7 @@ function TopProcsRam($top=10) {
       Name = $p.Name
       Id = $p.Id
       CPU = $p.CPU
+      CpuPct = $null
       WorkingSet64 = $p.WorkingSet64
       Path = $path
     }

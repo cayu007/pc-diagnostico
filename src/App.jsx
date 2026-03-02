@@ -176,6 +176,11 @@ function safeStr(v) {
   }
 }
 
+function formatCpuPct(v) {
+  if (v == null || Number.isNaN(Number(v))) return "N/D";
+  return `${Number(v).toFixed(2)}%`;
+}
+
 function Table({ cols, rows, dark }) {
   return (
     <div
@@ -1172,7 +1177,7 @@ export default function App() {
                   dark={dark}
                 >
                   <div className={cls("text-sm", dark ? "text-zinc-400" : "text-gray-600")}>
-                    Filtra por nombre o ruta. (Top CPU y Top RAM)
+                    Filtra por nombre o ruta. El % CPU refleja uso actual (muestreo instantáneo), no tiempo acumulado.
                   </div>
                 </Section>
 
@@ -1183,7 +1188,7 @@ export default function App() {
                       cols={[
                         { key: "Name", label: "Proceso", render: (r) => safeStr(r?.Name) },
                         { key: "Id", label: "PID", render: (r) => safeStr(r?.Id) },
-                        { key: "CPU", label: "CPU total", render: (r) => (r?.CPU != null ? Number(r.CPU).toFixed(2) : "N/D") },
+                        { key: "CpuPct", label: "% CPU actual", render: (r) => formatCpuPct(r?.CpuPct) },
                         { key: "WorkingSet64", label: "RAM", render: (r) => formatBytes(r?.WorkingSet64) },
                         {
                           key: "Path",
@@ -1245,7 +1250,7 @@ export default function App() {
                         { key: "Name", label: "Proceso", render: (r) => safeStr(r?.Name) },
                         { key: "Id", label: "PID", render: (r) => safeStr(r?.Id) },
                         { key: "WorkingSet64", label: "RAM", render: (r) => formatBytes(r?.WorkingSet64) },
-                        { key: "CPU", label: "CPU total", render: (r) => (r?.CPU != null ? Number(r.CPU).toFixed(2) : "N/D") },
+                        { key: "CpuPct", label: "% CPU actual", render: (r) => formatCpuPct(r?.CpuPct) },
                         {
                           key: "Path",
                           label: "Ruta",
